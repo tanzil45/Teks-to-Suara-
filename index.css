@@ -1,0 +1,200 @@
+import React, { useState, useEffect, useRef } from "react";
+import { Volume2, Play, Pause, Square, Sparkles, Download, ChevronDown } from "lucide-react";
+
+interface WaveformDisplayProps {
+  isPlaying: boolean;
+  engine: "ai" | "system";
+  voiceName: string;
+  emotion?: string;
+  onTogglePlay: () => void;
+  onStop: () => void;
+  hasAudio: boolean;
+  isGenerating: boolean;
+  onDownload?: (format: "wav" | "mp3") => void;
+}
+
+export default function WaveformDisplay({
+  isPlaying,
+  engine,
+  voiceName,
+  emotion,
+  onTogglePlay,
+  onStop,
+  hasAudio,
+  isGenerating,
+  onDownload,
+}: WaveformDisplayProps) {
+  // Generate random heights for the waveform bar animation fallback
+  const barCounts = 24;
+  const bars = Array.from({ length: barCounts });
+
+  const [showDownloadOptions, setShowDownloadOptions] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown on click outside
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setShowDownloadOptions(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, []);
+
+  return (
+    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col md:flex-row items-center justify-between gap-6 overflow-visible relative">
+      {/* Decorative ambient background blur */}
+      <div className={`absolute top-0 right-0 w-32 h-32 bg-violet-600/10 rounded-full blur-2xl transition-opacity duration-700 ${isPlaying ? 'opacity-100' : 'opacity-40'}`} />
+      <div className={`absolute bottom-0 left-0 w-32 h-32 bg-indigo-600/10 rounded-full blur-2xl transition-opacity duration-700 ${isPlaying ? 'opacity-100' : 'opacity-40'}`} />
+
+      {/* Left pane: Audio Status Info */}
+      <div className="flex items-center gap-4 z-10 w-full md:w-auto">
+        <div className={`w-14 h-14 rounded-full flex items-center justify-center transition-all duration-500 
+          ${isGenerating ? 'bg-indigo-950 text-indigo-400 rotate-180 animate-pulse' : 
+            isPlaying ? 'bg-violet-600 text-white scale-110 shadow-lg shadow-violet-500/20' : 
+            'bg-slate-800 text-slate-400'}`}
+        >
+          {isGenerating ? (
+            <Sparkles className="w-6 h-6 animate-spin" />
+          ) : (
+            <Volume2 className={`w-6 h-6 ${isPlaying ? 'animate-bounce' : ''}`} />
+          )}
+        </div>
+
+        <div>
+          <h3 className="text-white font-medium text-base font-display">
+            {isGenerating ? "Menerjemahkan Teks ke Suara..." : isPlaying ? "Sedang Membaca" : "Siap Memutar"}
+          </h3>
+          <p className="text-slate-400 text-xs font-mono mt-0.5 flex flex-wrap items-center gap-2">
+            <span>Mesin: <span className="text-indigo-400 font-semibold">{engine === "ai" ? "Neural AI" : "Browser"}</span></span>
+            <span className="w-1 h-1 bg-slate-700 rounded-full"></span>
+            <span>Suara: <span className="text-violet-400 font-semibold">{voiceName}</span></span>
+            {engine === "ai" && emotion && (
+              <>
+                <span className="w-1 h-1 bg-slate-700 rounded-full"></span>
+                <span>Nada: <span className="text-amber-400 font-semibold uppercase text-[10px]">{emotion}</span></span>
+              </>
+            )}
+          </p>
+        </div>
+      </div>
+
+      {/* Middle pane: Interactive Visualizer Waveform */}
+      <div className="flex-1 flex justify-center items-center h-14 bg-slate-950/60 border border-slate-800/40 rounded-xl px-6 w-full max-w-[320px] md:max-w-none relative">
+        {isGenerating ? (
+          <div className="flex space-x-1.5 items-center justify-center">
+            <span className="w-2 h-2 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+            <span className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+            <span className="w-2 h-2 bg-indigo-300 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+            <span className="text-slate-500 text-xs font-medium ml-2">Mengolah suara...</span>
+          </div>
+        ) : (
+          <div className="flex space-x-[3px] items-center justify-center w-full h-[36px] overflow-hidden">
+            {bars.map((_, idx) => {
+              // Generate dynamic custom delay for each bar
+              const delay = (idx % 6) * 150;
+              const randomFactor = 0.4 + Math.random() * 0.6; // random range factor for authentic look
+              return (
+                <div
+                  key={idx}
+                  className={`w-[4px] rounded-full transition-all duration-300 ${
+                    isPlaying 
+                      ? 'bg-gradient-to-t from-indigo-500 to-violet-400 animate-wave-bar' 
+                      : 'bg-slate-800 h-[4px]'
+                  }`}
+                  style={{
+                    height: isPlaying ? '32px' : '4px',
+                    animationDelay: `${delay}ms`,
+                    animationDuration: `${1.0 + randomFactor}s`,
+                    transformOrigin: "center",
+                  }}
+                />
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Right pane: Playback Control Buttons */}
+      <div className="flex items-center gap-3 z-10 w-full md:w-auto justify-end">
+        {hasAudio && engine === "ai" && onDownload && (
+          <div className="relative" ref={dropdownRef}>
+            <button
+              onClick={() => setShowDownloadOptions(!showDownloadOptions)}
+              className="px-4 py-2.5 rounded-xl font-medium text-sm transition-all duration-200 flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-zinc-200 border border-slate-700/60 shadow-md cursor-pointer hover:text-white"
+              title="Unduh Audio"
+            >
+              <Download className="w-4 h-4 text-violet-400" />
+              <span>Unduh</span>
+              <ChevronDown className="w-3.5 h-3.5 text-zinc-500" />
+            </button>
+            {showDownloadOptions && (
+              <div className="absolute right-0 bottom-full mb-2 w-36 rounded-xl bg-slate-950 border border-slate-800 shadow-2xl p-1.5 z-50 flex flex-col gap-1">
+                <button
+                  onClick={() => {
+                    onDownload("wav");
+                    setShowDownloadOptions(false);
+                  }}
+                  className="w-full px-3 py-2 text-left text-xs font-medium text-zinc-300 hover:text-white hover:bg-indigo-600/30 rounded-lg transition-colors flex items-center justify-between cursor-pointer"
+                >
+                  <span>Format .WAV</span>
+                  <span className="text-[9px] bg-indigo-500/10 text-indigo-400 px-1 py-0.5 rounded uppercase font-bold">HQ</span>
+                </button>
+                <button
+                  onClick={() => {
+                    onDownload("mp3");
+                    setShowDownloadOptions(false);
+                  }}
+                  className="w-full px-3 py-2 text-left text-xs font-medium text-zinc-300 hover:text-white hover:bg-indigo-600/30 rounded-lg transition-colors flex items-center justify-between cursor-pointer"
+                >
+                  <span>Format .MP3</span>
+                  <span className="text-[9px] bg-emerald-500/10 text-emerald-400 px-1 py-0.5 rounded uppercase font-bold">Standard</span>
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        <button
+          onClick={onTogglePlay}
+          disabled={!hasAudio || isGenerating}
+          id="btn-toggle-play"
+          className={`flex-1 md:flex-none px-5 py-2.5 rounded-xl font-medium text-sm transition-all duration-200 flex items-center justify-center gap-2 
+            ${!hasAudio 
+              ? 'bg-slate-800 text-slate-500 cursor-not-allowed' 
+              : isPlaying 
+                ? 'bg-amber-600 hover:bg-amber-500 text-white shadow-md shadow-amber-500/10' 
+                : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-500/20'}`}
+        >
+          {isPlaying ? (
+            <>
+              <Pause className="w-4 h-4 fill-white" />
+              <span>Jeda</span>
+            </>
+          ) : (
+            <>
+              <Play className="w-4 h-4 fill-white" />
+              <span>Putar</span>
+            </>
+          )}
+        </button>
+
+        <button
+          onClick={onStop}
+          disabled={!isPlaying || isGenerating}
+          id="btn-stop-audio"
+          className={`w-11 h-11 rounded-xl flex items-center justify-center transition-all duration-200 
+            ${isPlaying 
+              ? 'bg-rose-950/60 hover:bg-rose-900 border border-rose-800 text-rose-400 cursor-pointer' 
+              : 'bg-slate-800/40 text-slate-600 border border-slate-800/20 cursor-not-allowed'}`}
+          title="Berhenti"
+        >
+          <Square className="w-4 h-4 fill-current" />
+        </button>
+      </div>
+    </div>
+  );
+}

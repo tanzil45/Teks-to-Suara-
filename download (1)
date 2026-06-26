@@ -1,0 +1,1248 @@
+import React, { useState, useEffect, useRef } from "react";
+import { 
+  Sparkles, 
+  Settings, 
+  RotateCcw, 
+  Volume2, 
+  Bookmark, 
+  History, 
+  Play, 
+  Pause, 
+  Sliders, 
+  Trash2, 
+  Info,
+  Check,
+  Copy,
+  User,
+  Activity,
+  Cpu,
+  MonitorPlay,
+  HelpCircle,
+  Download,
+  ChevronDown,
+  Key,
+  Eye,
+  EyeOff,
+  ExternalLink
+} from "lucide-react";
+import TextView from "./components/TextView";
+import WaveformDisplay from "./components/WaveformDisplay";
+import { CUSTOM_PRESETS } from "./presets";
+import { VoiceOption, HistoryItem } from "./types";
+
+const GEMINI_VOICES: VoiceOption[] = [
+  { id: "Kore", name: "Kaira (Kore)", lang: "id-ID / en-US", gender: "Perempuan", engine: "ai", baseVoice: "Kore", description: "Sopan, hangat & lembut. Pilihan terpopuler untuk asisten virtual." },
+  { id: "Zephyr", name: "Zhafira (Zephyr)", lang: "id-ID / en-US", gender: "Perempuan", engine: "ai", baseVoice: "Zephyr", description: "Rileks, kasual & puitis. Cocok untuk buku audio dan podcast." },
+  { id: "Adit-Charon", name: "Adit (Charon)", lang: "id-ID / en-US", gender: "Laki-laki", engine: "ai", baseVoice: "Charon", description: "Pria Formal & Berwibawa. Sangat cocok untuk pidato dan berita resmi." },
+  { id: "Baskara-Fenrir", name: "Baskara (Fenrir)", lang: "id-ID / en-US", gender: "Laki-laki", engine: "ai", baseVoice: "Fenrir", description: "Pria Berat & Hangat. Nada tebal khas dokumenter dan ulasan ulasan mendalam." },
+  { id: "Dimas-Puck", name: "Dimas (Puck)", lang: "id-ID / en-US", gender: "Laki-laki", engine: "ai", baseVoice: "Puck", description: "Pria Ceria & Ekspresif. Sangat energetik, cocok untuk iklan produk." },
+  { id: "Budi-Charon", name: "Budi (Charon)", lang: "id-ID / en-US", gender: "Laki-laki", engine: "ai", baseVoice: "Charon", description: "Pria Dewasa & Santun. Suara edukatif berwibawa, cocok untuk e-learning bisnis." },
+  { id: "Wira-Fenrir", name: "Wira (Fenrir)", lang: "id-ID / en-US", gender: "Laki-laki", engine: "ai", baseVoice: "Fenrir", description: "Pria Gagah & Bersahaja. Karismatik untuk mendongeng sejarah atau drama audio." },
+  { id: "Raka-Puck", name: "Raka (Puck)", lang: "id-ID / en-US", gender: "Laki-laki", engine: "ai", baseVoice: "Puck", description: "Pria Ramah & Gaul. Gaya asyik santai untuk podcast remaja atau sapaan harian." }
+];
+
+// Safe helper helper wrappers to bypass security exceptions when sandboxed inside restricted iframes
+const getSpeechSynthesis = (): SpeechSynthesis | null => {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.speechSynthesis || null;
+  } catch (e) {
+    console.warn("speechSynthesis is blocked or inaccessible in this screen context:", e);
+    return null;
+  }
+};
+
+const safeLocalStorage = {
+  getItem: (key: string): string | null => {
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        return window.localStorage.getItem(key);
+      }
+    } catch (e) {
+      console.warn("localStorage read is blocked in this screen context:", e);
+    }
+    return null;
+  },
+  setItem: (key: string, value: string): void => {
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        window.localStorage.setItem(key, value);
+      }
+    } catch (e) {
+      console.warn("localStorage write is blocked in this screen context:", e);
+    }
+  }
+};
+
+export default function App() {
+  // Principal Speech states
+  const [text, setText] = useState<string>(
+    "Selamat datang di aplikasi Teks ke Suara. Teknologi kecerdasan buatan Neural AI kami mampu mengubah teks tertulis menjadi suara manusia yang terdengar sangat alami dengan intonasi bernyawa. Silakan masukkan naskah Anda, pilih karakter suara di panel kanan, dan nikmati hasil suaranya secara instan."
+  );
+  const [selectedEngine, setSelectedEngine] = useState<"ai" | "system">("ai");
+  const [selectedVoiceId, setSelectedVoiceId] = useState<string>("Kore");
+  const [aiEmotion, setAiEmotion] = useState<string>("normal");
+  const [speed, setSpeed] = useState<number>(1.0);
+  const [pitch, setPitch] = useState<number>(1.0);
+  
+  // Audio playback status
+  const [isGenerating, setIsGenerating] = useState<boolean>(false);
+  const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  const [activeAudioUrl, setActiveAudioUrl] = useState<string | null>(null);
+  const [activeAudioBlob, setActiveAudioBlob] = useState<Blob | null>(null);
+  const [activeHistoryPlayingId, setActiveHistoryPlayingId] = useState<string | null>(null);
+  const [activeHistoryDownloadId, setActiveHistoryDownloadId] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  
+  // System local speech synthesis voices loaded dynamically
+  const [systemVoices, setSystemVoices] = useState<VoiceOption[]>([]);
+  const [activePresetCategory, setActivePresetCategory] = useState<string>("Gaya Pidato/Formal");
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [toastMessage, setToastMessage] = useState<{ type: "success" | "error" | "info"; text: string } | null>(null);
+
+  // Custom user Gemini API Key state & toggles
+  const [geminiApiKey, setGeminiApiKey] = useState<string>(() => {
+    return safeLocalStorage.getItem("gemini_api_key") || "";
+  });
+  const [inputApiKey, setInputApiKey] = useState<string>(() => {
+    return safeLocalStorage.getItem("gemini_api_key") || "";
+  });
+  const [showApiKey, setShowApiKey] = useState<boolean>(false);
+  const [isValidatingKey, setIsValidatingKey] = useState<boolean>(false);
+
+  // HTML Audio instance for playing the AI synthesized voice
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  // Keep track of systemic voice speech synthesis object
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+
+  // Initialize & load local speech voices and search history
+  useEffect(() => {
+    // Determine history from localStorage
+    const saved = safeLocalStorage.getItem("tts_history_logs");
+    if (saved) {
+      try {
+        setHistory(JSON.parse(saved));
+      } catch (e) {
+        console.error("Gagal memuat riwayat", e);
+      }
+    }
+
+    // Load standard browser Speech Synthesis voices
+    const loadSystemVoices = () => {
+      const synth = getSpeechSynthesis();
+      if (synth) {
+        try {
+          const voices = synth.getVoices();
+          if (voices && voices.length > 0) {
+            const mapped: VoiceOption[] = voices
+              .filter(v => v && v.lang && (v.lang.startsWith("id") || v.lang.startsWith("en") || v.lang.startsWith("ms")))
+              .map(v => {
+                const voiceName = v.name || "Default Voice";
+                const nameLower = voiceName.toLowerCase();
+                let gender: "Laki-laki" | "Perempuan" | "Netral" = "Netral";
+                if (nameLower.includes("female") || nameLower.includes("zira") || nameLower.includes("susan") || nameLower.includes("hazel") || nameLower.includes("google wanita") || nameLower.includes("mei-jia") || nameLower.includes("kore") || nameLower.includes("damayanti")) {
+                  gender = "Perempuan";
+                } else if (nameLower.includes("male") || nameLower.includes("david") || nameLower.includes("ravi") || nameLower.includes("george") || nameLower.includes("baskara") || nameLower.includes("wira")) {
+                  gender = "Laki-laki";
+                }
+                return {
+                  id: voiceName,
+                  name: voiceName.replace(/Microsoft|Google|Apple/g, "").trim(),
+                  lang: v.lang || "id-ID",
+                  gender,
+                  engine: "system",
+                  isLocal: v.localService,
+                  nativeVoice: v
+                };
+              });
+            setSystemVoices(mapped);
+          }
+        } catch (err) {
+          console.error("Gagal memuat suara browser lokal:", err);
+        }
+      }
+    };
+
+    loadSystemVoices();
+    const synth = getSpeechSynthesis();
+    if (synth) {
+      try {
+        synth.onvoiceschanged = loadSystemVoices;
+      } catch (e) {
+        console.warn("Gagal meregistrasi handler onvoiceschanged:", e);
+      }
+    }
+
+    return () => {
+      // Cleanup audio
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+      const synthCleanup = getSpeechSynthesis();
+      if (synthCleanup) {
+        try {
+          synthCleanup.cancel();
+        } catch (e) {
+          console.warn("Gagal cancel speech synthesis:", e);
+        }
+      }
+    };
+  }, []);
+
+  // Separate effect to safely clean up any remaining object URL on unmount
+  useEffect(() => {
+    return () => {
+      setActiveAudioUrl(prevUrl => {
+        if (prevUrl) {
+          try {
+            URL.revokeObjectURL(prevUrl);
+          } catch (e) {
+            console.warn(e);
+          }
+        }
+        return null;
+      });
+    };
+  }, []);
+
+  // Save history to storage when updated
+  const saveHistoryToStorage = (newHistory: HistoryItem[]) => {
+    setHistory(newHistory);
+    safeLocalStorage.setItem("tts_history_logs", JSON.stringify(newHistory));
+  };
+
+  const showToast = (text: string, type: "success" | "error" | "info" = "success") => {
+    setToastMessage({ text, type });
+    setTimeout(() => setToastMessage(null), 4000);
+  };
+
+  // Switch engines & update selected voice automatically
+  const handleEngineChange = (engine: "ai" | "system") => {
+    setSelectedEngine(engine);
+    if (engine === "ai") {
+      setSelectedVoiceId("Kore");
+    } else {
+      if (systemVoices.length > 0) {
+        // Try to pre-select Indonesian voice if present, else first voice
+        const idVoice = systemVoices.find(v => v.lang.includes("id"));
+        setSelectedVoiceId(idVoice ? idVoice.id : systemVoices[0].id);
+      } else {
+        setSelectedVoiceId("");
+      }
+    }
+    // Stop playing when changing engine
+    handleStop();
+  };
+
+  // Convert Text to Speech Action
+  const handleGenerateAndPlay = async () => {
+    if (!text.trim()) {
+      showToast("Harap masukkan naskah teks terlebih dahulu.", "error");
+      return;
+    }
+
+    // Stop existing playbacks
+    handleStop();
+
+    if (selectedEngine === "ai") {
+      setIsGenerating(true);
+      try {
+        const matchedVoice = GEMINI_VOICES.find(v => v.id === selectedVoiceId);
+        const voiceToSend = matchedVoice && matchedVoice.baseVoice ? matchedVoice.baseVoice : selectedVoiceId;
+
+        const response = await fetch("/api/tts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text: text,
+            voice: voiceToSend,
+            emotion: aiEmotion,
+            customApiKey: geminiApiKey
+          })
+        });
+
+        if (!response.ok) {
+          const errData = await response.json();
+          throw new Error(errData.error || "Gagal menghubungi API.");
+        }
+
+        const data = await response.json();
+        if (data.success && data.audio) {
+          const audioMimeType = data.mimeType || "audio/wav";
+          const binaryStr = atob(data.audio);
+          const len = binaryStr.length;
+          const bytes = new Uint8Array(len);
+          for (let i = 0; i < len; i++) {
+            bytes[i] = binaryStr.charCodeAt(i);
+          }
+          const blob = new Blob([bytes], { type: audioMimeType });
+          const url = URL.createObjectURL(blob);
+          
+          setActiveAudioBlob(blob);
+          setActiveAudioUrl(prevUrl => {
+            if (prevUrl) {
+              try {
+                URL.revokeObjectURL(prevUrl);
+              } catch (e) {
+                console.warn(e);
+              }
+            }
+            return url;
+          });
+
+          // Build audio player
+          const audio = new Audio(url);
+          audioRef.current = audio;
+          
+          audio.onplay = () => setIsPlaying(true);
+          audio.onended = () => setIsPlaying(false);
+          audio.onpause = () => setIsPlaying(false);
+          audio.onerror = () => {
+            showToast("Gagal memutar audio.", "error");
+            setIsPlaying(false);
+          };
+
+          // Play audio
+          audio.play().catch(err => {
+            console.warn("audio.play() was prevented by browser/iframe restrictions:", err);
+          });
+
+          // Add to history
+          const matchedVoice = GEMINI_VOICES.find(v => v.id === selectedVoiceId);
+          const newHistoryItem: HistoryItem = {
+            id: Date.now().toString(),
+            text: text.substring(0, 160) + (text.length > 160 ? "..." : ""),
+            timestamp: new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }),
+            engine: "ai",
+            voiceId: selectedVoiceId,
+            voiceName: matchedVoice ? `${matchedVoice.name} (AI)` : selectedVoiceId,
+            emotion: aiEmotion,
+            audioBase64: data.audio,
+            audioMimeType: audioMimeType
+          };
+          saveHistoryToStorage([newHistoryItem, ...history]);
+          showToast("Berhasil menghasilkan suara neural AI!", "success");
+        } else {
+          throw new Error("Format audio tidak sesuai dari server.");
+        }
+      } catch (err: any) {
+        console.error(err);
+        showToast(err.message || "Gagal memproses suara neural AI.", "error");
+      } finally {
+        setIsGenerating(false);
+      }
+    } else {
+      // Browser SpeechSynthesis Engine
+      const synth = getSpeechSynthesis();
+      if (!synth) {
+        showToast("Speech synthesis tidak didukung oleh browser Anda atau dibatasi dalam frame ini.", "error");
+        return;
+      }
+
+      setIsGenerating(true);
+      setTimeout(() => {
+        try {
+          const utterance = new SpeechSynthesisUtterance(text);
+          utteranceRef.current = utterance;
+
+          const matchedSystemVoice = systemVoices.find(v => v.id === selectedVoiceId);
+          if (matchedSystemVoice && matchedSystemVoice.nativeVoice) {
+            utterance.voice = matchedSystemVoice.nativeVoice;
+          }
+          
+          // Configure parameters
+          utterance.rate = speed;
+          utterance.pitch = pitch;
+
+          utterance.onstart = () => {
+            setIsGenerating(false);
+            setIsPlaying(true);
+          };
+
+          utterance.onend = () => {
+            setIsPlaying(false);
+          };
+
+          utterance.onerror = (e) => {
+            console.error(e);
+            setIsGenerating(false);
+            setIsPlaying(false);
+            showToast("Gagal memproses speech synthesis.", "error");
+          };
+
+          synth.speak(utterance);
+
+          const newHistoryItem: HistoryItem = {
+            id: Date.now().toString(),
+            text: text.substring(0, 160) + (text.length > 160 ? "..." : ""),
+            timestamp: new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }),
+            engine: "system",
+            voiceId: selectedVoiceId,
+            voiceName: matchedSystemVoice ? `${matchedSystemVoice.name} (Sistem)` : "Suara Sistem",
+            speed,
+            pitch
+          };
+          saveHistoryToStorage([newHistoryItem, ...history]);
+        } catch (e) {
+          console.error(e);
+          setIsGenerating(false);
+          setIsPlaying(false);
+          showToast("Proses speech synthesis diblokir atau gagal.", "error");
+        }
+      }, 300);
+    }
+  };
+
+  // Play and Pause Toggle
+  const handleTogglePlay = () => {
+    if (selectedEngine === "ai") {
+      if (audioRef.current) {
+        if (isPlaying) {
+          audioRef.current.pause();
+        } else {
+          audioRef.current.play().catch(err => {
+            console.warn("audioRef.current.play() was prevented by browser/iframe restrictions:", err);
+          });
+        }
+      } else {
+        handleGenerateAndPlay();
+      }
+    } else {
+      // System engine has native pause and resume methods
+      const synth = getSpeechSynthesis();
+      if (synth) {
+        if (isPlaying) {
+          try {
+            synth.pause();
+          } catch (e) {
+            console.error(e);
+          }
+          setIsPlaying(false);
+        } else {
+          if (synth.paused) {
+            try {
+              synth.resume();
+            } catch (e) {
+              console.error(e);
+            }
+            setIsPlaying(true);
+          } else {
+            handleGenerateAndPlay();
+          }
+        }
+      } else {
+        showToast("Suara sistem tidak didukung di lingkungan ini.", "info");
+      }
+    }
+  };
+
+  // Stop completely
+  const handleStop = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+    const synth = getSpeechSynthesis();
+    if (synth) {
+      try {
+        synth.cancel();
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    setIsPlaying(false);
+    setActiveHistoryPlayingId(null);
+  };
+
+  // Play older clips directly from history instantly without querying API again!
+  const handlePlayHistory = (item: HistoryItem) => {
+    handleStop();
+    
+    if (item.engine === "ai" && item.audioBase64) {
+      setActiveHistoryPlayingId(item.id);
+      setIsPlaying(true);
+      
+      const audioMimeType = item.audioMimeType || "audio/wav";
+      const binaryStr = atob(item.audioBase64);
+      const len = binaryStr.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binaryStr.charCodeAt(i);
+      }
+      const blob = new Blob([bytes], { type: audioMimeType });
+      const url = URL.createObjectURL(blob);
+      
+      setActiveAudioBlob(blob);
+      setActiveAudioUrl(prevUrl => {
+        if (prevUrl) {
+          try {
+            URL.revokeObjectURL(prevUrl);
+          } catch (e) {
+            console.warn(e);
+          }
+        }
+        return url;
+      });
+
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      
+      audio.onended = () => {
+        setIsPlaying(false);
+        setActiveHistoryPlayingId(null);
+      };
+      audio.onerror = () => {
+        setIsPlaying(false);
+        setActiveHistoryPlayingId(null);
+        showToast("Audio kedaluwarsa atau corrupt.", "error");
+      };
+      audio.play().catch(err => {
+        console.warn("audio.play() in handlePlayHistory was prevented by browser/iframe restrictions:", err);
+      });
+    } else {
+      // Re-read history item using Browser synthesis
+      setSelectedEngine("system");
+      setSelectedVoiceId(item.voiceId);
+      if (item.speed) setSpeed(item.speed);
+      if (item.pitch) setPitch(item.pitch);
+      
+      // Load current text block as active text
+      // We will perform read
+      showToast("Memuat ulang teks dan suara dari riwayat...", "info");
+    }
+  };
+
+  // Clear history logs
+  const handleClearHistory = () => {
+    saveHistoryToStorage([]);
+    showToast("Semua riwayat berhasil dihapus.", "success");
+  };
+
+  // Delete single history log
+  const handleDeleteHistoryItem = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation(); // Avoid triggering replay activity
+    const filtered = history.filter(item => item.id !== id);
+    saveHistoryToStorage(filtered);
+    showToast("Item riwayat dihapus.", "success");
+  };
+
+  // Helper to trigger direct file download
+  const downloadBlob = (blob: Blob, fileName: string) => {
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+    }, 100);
+  };
+
+  // Download active synthesized audio
+  const handleDownloadAudio = (format: "wav" | "mp3") => {
+    if (!activeAudioBlob) {
+      showToast("Tidak ada audio hasil sintesis yang siap diunduh.", "error");
+      return;
+    }
+
+    const textSnippet = text.trim()
+      ? text.trim().substring(0, 20).replace(/[^a-zA-Z0-9]/g, "_")
+      : "audio";
+    const voiceName = selectedVoiceId || "suara";
+    const fileName = `tts_${voiceName}_${textSnippet}.${format}`;
+
+    const mimeType = format === "mp3" ? "audio/mp3" : (activeAudioBlob.type || "audio/wav");
+    const typedBlob = new Blob([activeAudioBlob], { type: mimeType });
+
+    downloadBlob(typedBlob, fileName);
+    showToast(`Berhasil mengunduh audio sebagai ${format.toUpperCase()}!`, "success");
+  };
+
+  // Download a historical audio directly
+  const handleDownloadHistoryItem = (item: HistoryItem, format: "wav" | "mp3", e: React.MouseEvent) => {
+    e.stopPropagation(); // Avoid triggering play history item
+    if (!item.audioBase64) return;
+
+    try {
+      const binaryStr = atob(item.audioBase64);
+      const len = binaryStr.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binaryStr.charCodeAt(i);
+      }
+      
+      const mimeType = format === "mp3" ? "audio/mp3" : (item.audioMimeType || "audio/wav");
+      const blob = new Blob([bytes], { type: mimeType });
+
+      const textSnippet = item.text
+        ? item.text.substring(0, 20).replace(/[^a-zA-Z0-9]/g, "_")
+        : "audio_history";
+      const fileName = `tts_history_${item.voiceId}_${textSnippet}.${format}`;
+
+      downloadBlob(blob, fileName);
+      showToast(`Berhasil mengunduh riwayat audio sebagai ${format.toUpperCase()}!`, "success");
+    } catch (err) {
+      console.error(err);
+      showToast("Gagal memproses pengunduhan riwayat audio.", "error");
+    }
+  };
+
+  // Validate and save custom Gemini API key
+  const handleSaveApiKey = async () => {
+    const trimmed = inputApiKey.trim();
+    if (!trimmed) {
+      setGeminiApiKey("");
+      safeLocalStorage.setItem("gemini_api_key", "");
+      showToast("Kunci API kustom dikosongkan. Sistem akan menggunakan kunci server bawaan jika tersedia.", "info");
+      return;
+    }
+
+    setIsValidatingKey(true);
+    try {
+      const response = await fetch("/api/validate-key", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customApiKey: trimmed })
+      });
+
+      const data = await response.json();
+      if (response.ok && data.success) {
+        setGeminiApiKey(trimmed);
+        safeLocalStorage.setItem("gemini_api_key", trimmed);
+        showToast("Kunci API berhasil diverifikasi dan disimpan secara lokal!", "success");
+      } else {
+        showToast(data.error || "Kunci API tidak valid. Pastikan Anda menyalinnya dengan benar.", "error");
+      }
+    } catch (err: any) {
+      console.error(err);
+      showToast("Gagal memverifikasi Kunci API karena kesalahan koneksi.", "error");
+    } finally {
+      setIsValidatingKey(false);
+    }
+  };
+
+  // Clear / remove custom API key
+  const handleClearApiKey = () => {
+    setInputApiKey("");
+    setGeminiApiKey("");
+    safeLocalStorage.setItem("gemini_api_key", "");
+    showToast("Kunci API kustom berhasil dihapus dari perangkat.", "success");
+  };
+
+  // Enhance Text using prompt AI
+  const handleEnhanceTextWithAI = async (mode: string) => {
+    if (!text.trim()) return;
+    setIsGenerating(true);
+    try {
+      const response = await fetch("/api/enhance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          text, 
+          mode,
+          customApiKey: geminiApiKey 
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error("Gagal menyempurnakan naskah.");
+      }
+
+      const data = await response.json();
+      if (data.success && data.enhancedText) {
+        setText(data.enhancedText);
+        showToast(`Teks berhasil diperbaiki dengan gaya ${mode === 'formal' ? 'Formal' : mode === 'casual' ? 'Santai' : mode === 'storytelling' ? 'Dongeng' : 'Puitis'}!`, "success");
+      }
+    } catch (e: any) {
+      showToast(e.message || "Gagal menyempurnakan teks.", "error");
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  // Apply Preset template naskah
+  const handleSelectPreset = (presetText: string) => {
+    setText(presetText);
+    showToast("Naskah dimasukkan ke editor.", "info");
+  };
+
+  // Copy text to clipboard
+  const handleCopyText = (content: string, id: string) => {
+    navigator.clipboard.writeText(content);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+    showToast("Teks disalin ke clipboard!", "success");
+  };
+
+  // Active voice configuration object
+  const activeVoiceName = selectedEngine === "ai" 
+    ? (GEMINI_VOICES.find(v => v.id === selectedVoiceId)?.name || "Kore")
+    : (systemVoices.find(v => v.id === selectedVoiceId)?.name || "Local Voice");
+
+  return (
+    <div className="min-h-screen bg-[#09090b] text-[#fafafa] flex flex-col font-sans selection:bg-indigo-600/30">
+      
+      {/* Toast Notification HUD */}
+      {toastMessage && (
+        <div className={`fixed bottom-6 right-6 z-50 flex items-center gap-3 px-4 py-3 rounded-xl border shadow-2xl transition-all duration-300 animate-slide-in
+          ${toastMessage.type === "success" 
+            ? "bg-emerald-950/90 border-emerald-800 text-emerald-200" 
+            : toastMessage.type === "error"
+              ? "bg-rose-950/90 border-rose-800 text-rose-200"
+              : "bg-indigo-950/90 border-indigo-800 text-indigo-200"}`}>
+          <div className="w-2 h-2 rounded-full bg-current animate-ping" />
+          <span className="text-xs font-semibold">{toastMessage.text}</span>
+        </div>
+      )}
+
+      {/* Header section */}
+      <header className="border-b border-[#27272a] bg-[#09090b] px-4 py-3 sm:px-6 sm:py-4 flex flex-col md:flex-row items-center justify-between gap-4 sticky top-0 z-40 backdrop-blur-md bg-opacity-95">
+        <div className="flex items-center gap-3 w-full md:w-auto justify-center md:justify-start">
+          <div className="w-9 h-9 bg-gradient-to-tr from-violet-600 to-fuchsia-500 rounded-xl flex items-center justify-center shadow-lg shadow-violet-500/20 shrink-0">
+            <Volume2 className="w-5 h-5 text-white" />
+          </div>
+          <div className="text-center md:text-left">
+            <div className="text-white font-bold leading-none tracking-tight font-display text-lg flex items-center justify-center md:justify-start gap-2">
+              VOXID AI <span className="text-[10px] bg-indigo-900/60 text-indigo-300 border border-indigo-800 rounded px-1.5 py-0.5 font-mono">Neural TTS</span>
+            </div>
+            <p className="text-[10px] text-zinc-500 font-mono mt-1">Sintesis Teks ke Suara Bahasa Indonesia dengan Neural AI</p>
+          </div>
+        </div>
+
+        {/* Engine switcher tabs in the Header */}
+        <div className="flex bg-[#121214] p-1 rounded-xl border border-[#27272a] w-full md:w-auto justify-center">
+          <button
+            onClick={() => handleEngineChange("ai")}
+            id="tab-engine-ai"
+            className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 flex items-center gap-1.5 cursor-pointer
+              ${selectedEngine === "ai" 
+                ? "bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-md shadow-violet-500/10" 
+                : "text-zinc-400 hover:text-zinc-200"}`}
+          >
+            <Cpu className="w-3.5 h-3.5" />
+            <span>Neural AI</span>
+          </button>
+          <button
+            onClick={() => handleEngineChange("system")}
+            id="tab-engine-system"
+            className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 flex items-center gap-1.5 cursor-pointer
+              ${selectedEngine === "system" 
+                ? "bg-gradient-to-r from-zinc-800 to-zinc-700 text-white" 
+                : "text-zinc-400 hover:text-zinc-200"}`}
+          >
+            <MonitorPlay className="w-3.5 h-3.5" />
+            <span>Browser Sistem</span>
+          </button>
+        </div>
+      </header>
+
+      {/* Main Container */}
+      <div className="flex-1 max-w-7xl w-full mx-auto grid grid-cols-1 lg:grid-cols-12 lg:overflow-hidden">
+        
+        {/* Left pane: Editor & Presets Workspace */}
+        <main className="lg:col-span-8 p-4 sm:p-6 lg:p-8 flex flex-col gap-6 lg:overflow-y-auto border-b lg:border-b-0 lg:border-r border-[#27272a] min-h-0">
+          
+          {/* Presets and template container */}
+          <section className="bg-[#121214] border border-[#27272a] p-4 sm:p-5 rounded-2xl">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#27272a]/60 pb-3 mb-4">
+              <div className="flex items-center gap-2">
+                <Bookmark className="w-4 h-4 text-violet-400" />
+                <h3 className="text-white font-semibold text-sm font-display">Pilih Naskah Contoh</h3>
+              </div>
+              
+              {/* Category tabs */}
+              <div className="flex gap-1.5 flex-wrap">
+                {["Gaya Pidato/Formal", "Santai / Percakapan", "Dongeng / Cerita", "Sastra/Puisi"].map((cat) => (
+                  <button
+                    key={cat}
+                    onClick={() => setActivePresetCategory(cat)}
+                    className={`px-3 py-1.5 rounded-lg text-[10px] font-semibold transition-all cursor-pointer ${
+                      activePresetCategory === cat 
+                        ? "bg-indigo-950 text-indigo-300 border border-indigo-800" 
+                        : "text-zinc-400 hover:text-zinc-200 border border-transparent"
+                    }`}
+                  >
+                    {cat}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Presets Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              {CUSTOM_PRESETS.filter(p => p.category === activePresetCategory).map((preset) => (
+                <button
+                  key={preset.id}
+                  onClick={() => handleSelectPreset(preset.text)}
+                  className="text-left p-3 rounded-xl bg-[#1c1c1f] hover:bg-[#222226] border border-[#27272a] hover:border-zinc-700 transition-all duration-200 group flex flex-col gap-1 cursor-pointer"
+                >
+                  <p className="text-xs font-bold text-zinc-200 group-hover:text-indigo-400 transition-colors font-display">
+                    {preset.title}
+                  </p>
+                  <p className="text-[10px] text-zinc-500 line-clamp-2 leading-relaxed">
+                    {preset.text}
+                  </p>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          {/* Core TextView input editor */}
+          <TextView
+            text={text}
+            onChangeText={(t) => setText(t)}
+            onEnhanceText={handleEnhanceTextWithAI}
+            isEnhancing={isGenerating}
+          />
+
+          {/* Quick Action Button to trigger TTS */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4">
+            <button
+              onClick={handleGenerateAndPlay}
+              disabled={isGenerating || !text.trim()}
+              id="btn-process-speech"
+              className={`flex-1 py-4 px-6 rounded-2xl font-bold font-display text-sm tracking-wide transition-all duration-300 flex items-center justify-center gap-2 bg-gradient-to-r 
+                ${!text.trim()
+                  ? "from-zinc-800 to-zinc-900 text-zinc-500 cursor-not-allowed border border-transparent"
+                  : "from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white shadow-xl shadow-indigo-600/20 hover:shadow-indigo-500/30 scale-100 hover:scale-[1.01] cursor-pointer"}`}
+            >
+              {isGenerating ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  <span>Sedang Memproses AI tts...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4 fill-white animate-pulse" />
+                  <span>Hasilkan Audio Realistis</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* active WaveformDisplay component in core layout panel */}
+          <WaveformDisplay
+            isPlaying={isPlaying}
+            engine={selectedEngine}
+            voiceName={activeVoiceName}
+            emotion={selectedEngine === "ai" ? aiEmotion : undefined}
+            onTogglePlay={handleTogglePlay}
+            onStop={handleStop}
+            hasAudio={activeAudioUrl !== null || selectedEngine === "system"}
+            isGenerating={isGenerating}
+            onDownload={handleDownloadAudio}
+          />
+
+        </main>
+
+        {/* Right Sidebar: Voice Config & Conversion Logs */}
+        <aside className="lg:col-span-4 p-4 sm:p-6 bg-[#121214] flex flex-col gap-6 lg:overflow-y-auto max-h-none border-t lg:border-t-0 lg:border-l border-[#27272a] min-h-0">
+          
+          {/* API Key Configuration Card */}
+          <div className="bg-[#1c1c1f] border border-[#27272a] rounded-xl p-4 flex flex-col gap-3 shadow-md">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Key className="w-4 h-4 text-violet-400" />
+                <span className="text-xs font-semibold text-white font-display">Kunci API Kustom (AI Studio)</span>
+              </div>
+              {geminiApiKey ? (
+                <span className="text-[9px] bg-emerald-500/10 text-emerald-400 border border-emerald-900/60 rounded px-1.5 py-0.5 font-bold tracking-wider uppercase">
+                  Kustom Aktif
+                </span>
+              ) : (
+                <span className="text-[9px] bg-zinc-800 text-zinc-400 rounded px-1.5 py-0.5 font-bold tracking-wider uppercase">
+                  Bawaan Server
+                </span>
+              )}
+            </div>
+
+            <p className="text-[10px] text-zinc-400 leading-relaxed">
+              Gunakan API Key Anda sendiri dari Google AI Studio secara lokal untuk kuota dan performa penuh yang terjamin.
+            </p>
+
+            <div className="flex items-center gap-1.5 relative mt-1">
+              <input
+                type={showApiKey ? "text" : "password"}
+                value={inputApiKey}
+                onChange={(e) => setInputApiKey(e.target.value)}
+                placeholder="AIzaSy..."
+                className="flex-1 bg-zinc-950 border border-[#27272a] hover:border-zinc-700 focus:border-indigo-500 text-zinc-100 placeholder-zinc-600 rounded-lg py-2 pl-3 pr-9 text-xs transition-colors focus:outline-none font-mono"
+              />
+              <button
+                type="button"
+                onClick={() => setShowApiKey(!showApiKey)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 p-1 rounded transition-colors"
+                title={showApiKey ? "Sembunyikan" : "Tampilkan"}
+              >
+                {showApiKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2 mt-0.5">
+              <button
+                onClick={handleSaveApiKey}
+                disabled={isValidatingKey}
+                className="flex-1 py-1.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-semibold rounded-lg text-xs transition-all shadow-md shadow-indigo-600/10 cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
+              >
+                {isValidatingKey ? (
+                  <>
+                    <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    <span>Verifikasi...</span>
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-3 h-3" />
+                    <span>Simpan & Verifikasi</span>
+                  </>
+                )}
+              </button>
+
+              {geminiApiKey && (
+                <button
+                  onClick={handleClearApiKey}
+                  className="px-2.5 py-1.5 bg-[#121214] border border-[#27272a] hover:bg-zinc-800 hover:border-zinc-700 text-zinc-400 hover:text-rose-400 rounded-lg text-xs transition-all cursor-pointer flex items-center justify-center"
+                  title="Hapus API Key"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            <div className="mt-1 pt-2 border-t border-zinc-800/60 flex items-center justify-between">
+              <a
+                href="https://aistudio.google.com/"
+                target="_blank"
+                referrerPolicy="no-referrer"
+                className="text-[9px] text-violet-400 hover:text-violet-300 hover:underline flex items-center gap-1 transition-colors"
+              >
+                <span>Dapatkan API Key Gratis</span>
+                <ExternalLink className="w-2.5 h-2.5" />
+              </a>
+              <span className="text-[9px] text-zinc-600 font-mono">Disimpan di browser Anda</span>
+            </div>
+          </div>
+
+          {/* Voice configuration selection head */}
+          <div>
+            <label className="text-[11px] font-bold text-zinc-500 tracking-wider uppercase block mb-3 font-mono">
+              Model Karakter Suara ({selectedEngine === "ai" ? "Suara Neural" : "Browser Sistem"})
+            </label>
+
+            {/* Render appropriate engines */}
+            {selectedEngine === "ai" ? (
+              <div className="flex flex-col gap-2">
+                {GEMINI_VOICES.map((v) => {
+                  const isActive = selectedVoiceId === v.id;
+                  return (
+                    <button
+                      key={v.id}
+                      onClick={() => setSelectedVoiceId(v.id)}
+                      className={`w-full text-left p-3.5 rounded-xl border transition-all duration-200 flex items-center gap-3 cursor-pointer
+                        ${isActive 
+                          ? "bg-violet-950/40 border-violet-700/80 shadow-md shadow-violet-500/5 text-white" 
+                          : "bg-[#1c1c1f] hover:bg-[#222226] border-[#27272a] hover:border-zinc-700 text-zinc-300"}`}
+                    >
+                      <div className={`w-9 h-9 rounded-full flex items-center justify-center font-bold text-xs shrink-0
+                        ${isActive ? "bg-violet-600 text-white" : "bg-zinc-800 text-zinc-400"}`}>
+                        {v.name.substring(0, 2).toUpperCase()}
+                      </div>
+                      
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-xs text-white block">{v.name}</span>
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-medium tracking-wide
+                            ${v.gender === "Laki-laki" 
+                              ? "bg-blue-950/60 text-blue-400 border border-blue-900/60" 
+                              : "bg-fuchsia-950/60 text-fuchsia-400 border border-fuchsia-900/60"}`}>
+                            {v.gender}
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-zinc-400 mt-1 block leading-relaxed">
+                          {v.description || "Suara neural AI berteknologi tinggi."}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              /* Local voice choices */
+              <div className="max-h-[260px] overflow-y-auto pr-1 flex flex-col gap-1.5 scrollbar-thin scrollbar-thumb-zinc-800">
+                {systemVoices.length > 0 ? (
+                  systemVoices.map((v) => {
+                    const isActive = selectedVoiceId === v.id;
+                    return (
+                      <button
+                        key={v.id}
+                        onClick={() => setSelectedVoiceId(v.id)}
+                        className={`w-full text-left p-2.5 rounded-lg border transition-all duration-150 flex items-center gap-2.5 cursor-pointer
+                          ${isActive 
+                            ? "bg-zinc-800/80 border-indigo-500 text-white" 
+                            : "bg-[#1c1c1f] hover:bg-[#222226] border-[#27272a] text-zinc-300"}`}
+                      >
+                        <div className="w-7 h-7 bg-zinc-800 rounded-lg flex items-center justify-center font-bold text-[10px] text-indigo-400 shrink-0">
+                          {v.lang.substring(0,2).toUpperCase()}
+                        </div>
+                        
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold text-xs truncate text-white block">{v.name}</span>
+                            <span className="text-[8px] text-zinc-500 shrink-0 font-mono">{v.lang}</span>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })
+                ) : (
+                  <div className="p-4 rounded-xl border border-dashed border-[#27272a] text-center">
+                    <p className="text-xs text-zinc-500">Tidak ada suara browser lokal terdeteksi yang sesuai.</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Advanced sliders configurations panel */}
+          <div className="bg-[#1c1c1f] p-4 rounded-2xl border border-[#27272a] flex flex-col gap-4">
+            <div className="flex items-center justify-between border-b border-[#27272a]/50 pb-2.5">
+              <span className="text-xs font-bold text-white font-display flex items-center gap-1.5">
+                <Sliders className="w-3.5 h-3.5 text-violet-400" />
+                <span>Pengaturan Intonasi</span>
+              </span>
+              <button 
+                onClick={() => {
+                  setSpeed(1.0);
+                  setPitch(1.0);
+                  setAiEmotion("normal");
+                }}
+                className="text-[10px] text-zinc-500 hover:text-zinc-300 font-semibold cursor-pointer"
+              >
+                Reset
+              </button>
+            </div>
+
+            {selectedEngine === "ai" ? (
+              /* Emotion configurations for Gemini AI voices */
+              <div>
+                <label className="text-[10px] font-bold text-zinc-400 block mb-2 font-sans">
+                  Gaya Intonasi & Nada Bicara
+                </label>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {[
+                    { id: "normal", label: "Normal (Biasa)" },
+                    { id: "calm", label: "Calm (Tenang)" },
+                    { id: "excited", label: "Excited (Antusias)" },
+                    { id: "serious", label: "Serious (Formal)" },
+                    { id: "playful", label: "Playful (Ceria)" }
+                  ].map((emo) => (
+                    <button
+                      key={emo.id}
+                      onClick={() => setAiEmotion(emo.id)}
+                      className={`px-3 py-2 rounded-lg text-xs font-medium text-center border transition-all cursor-pointer ${
+                        aiEmotion === emo.id 
+                          ? "bg-violet-950/40 text-violet-300 border-violet-800" 
+                          : "bg-[#121214] text-zinc-400 border-transparent hover:border-zinc-800"
+                      }`}
+                    >
+                      {emo.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              /* Sliders for System synthesis */
+              <div className="space-y-4">
+                {/* Speed Slider */}
+                <div>
+                  <div className="flex items-center justify-between text-[11px] font-medium text-zinc-400 mb-1">
+                    <span>Kecepatan Membaca (Speed)</span>
+                    <span className="text-red-400 font-mono font-bold">{speed.toFixed(1)}x</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="2.0"
+                    step="0.1"
+                    value={speed}
+                    onChange={(e) => setSpeed(parseFloat(e.target.value))}
+                    className="w-full accent-indigo-500 cursor-ew-resize bg-zinc-800 rounded-lg appearance-none h-1.5"
+                  />
+                  <div className="flex justify-between text-[8px] text-zinc-600 font-mono mt-1">
+                    <span>Lambat (0.5x)</span>
+                    <span>Normal (1.0x)</span>
+                    <span>Cepat (2.0x)</span>
+                  </div>
+                </div>
+
+                {/* Pitch Slider */}
+                <div>
+                  <div className="flex items-center justify-between text-[11px] font-medium text-zinc-400 mb-1">
+                    <span>Tinggi Nada (Pitch)</span>
+                    <span className="text-red-400 font-mono font-bold">{pitch.toFixed(1)}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="2.0"
+                    step="0.1"
+                    value={pitch}
+                    onChange={(e) => setPitch(parseFloat(e.target.value))}
+                    className="w-full accent-indigo-500 cursor-ew-resize bg-zinc-800 rounded-lg appearance-none h-1.5"
+                  />
+                  <div className="flex justify-between text-[8px] text-zinc-600 font-mono mt-1">
+                    <span>Serak/Berat (0.5)</span>
+                    <span>Normal (1.0)</span>
+                    <span>Melengking (2.0)</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Historical Logs List */}
+          <div className="flex-1 flex flex-col min-h-[220px]">
+            <div className="flex items-center justify-between text-xs font-semibold pb-2 border-b border-[#27272a]/50 text-white font-display">
+              <span className="flex items-center gap-1.5">
+                <History className="w-3.5 h-3.5 text-zinc-400" />
+                <span>Riwayat Sesi Baru</span>
+              </span>
+              {history.length > 0 && (
+                <button
+                  onClick={handleClearHistory}
+                  className="text-[10px] text-rose-400 hover:text-rose-300 font-semibold cursor-pointer"
+                >
+                  Hapus Semua
+                </button>
+              )}
+            </div>
+
+            {/* Render Log List */}
+            <div className="flex-1 overflow-y-auto mt-3 space-y-2 max-h-[300px]">
+              {history.length > 0 ? (
+                history.map((item) => {
+                  const isCurrentPlayingInHistory = activeHistoryPlayingId === item.id;
+                  return (
+                    <div
+                      key={item.id}
+                      onClick={() => handlePlayHistory(item)}
+                      className={`p-3 rounded-xl border text-left transition-all duration-200 cursor-pointer relative group/item
+                        ${isCurrentPlayingInHistory 
+                          ? "bg-violet-950/20 border-violet-800" 
+                          : "bg-[#1c1c1f] hover:bg-[#222226] border-[#27272a] hover:border-zinc-700"}`}
+                    >
+                      <div className="flex justify-between items-start gap-2 mb-1.5">
+                        <span className="text-[10px] font-mono font-bold text-violet-400">
+                          {item.voiceName}
+                        </span>
+                        
+                        <div className="flex items-center gap-1.5 opacity-100 lg:opacity-10 lg:group-hover/item:opacity-100 transition-opacity">
+                          
+                          {/* Copy script button */}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleCopyText(item.text, item.id);
+                            }}
+                            className="p-1 rounded bg-[#121214] hover:bg-zinc-800 border border-[#27272a] text-zinc-400 hover:text-white"
+                            title="Salin Teks"
+                          >
+                            {copiedId === item.id ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                          </button>
+
+                          {/* Download history button (only if it has audioBase64 for AI) */}
+                          {item.engine === "ai" && item.audioBase64 && (
+                            <div className="relative">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveHistoryDownloadId(activeHistoryDownloadId === item.id ? null : item.id);
+                                }}
+                                className={`p-1 rounded bg-[#121214] hover:bg-zinc-800 border text-zinc-400 hover:text-white flex items-center transition-colors
+                                  ${activeHistoryDownloadId === item.id ? "border-violet-600 text-violet-400 bg-zinc-900" : "border-[#27272a]"}`}
+                                title="Unduh Berkas Audio"
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                              </button>
+                              
+                              {activeHistoryDownloadId === item.id && (
+                                <div 
+                                  onMouseLeave={() => setActiveHistoryDownloadId(null)}
+                                  className="absolute right-0 top-full mt-1 w-24 rounded-lg bg-slate-950 border border-slate-800 shadow-2xl p-1 z-50 flex flex-col gap-0.5"
+                                >
+                                  <button
+                                    onClick={(e) => {
+                                      handleDownloadHistoryItem(item, "wav", e);
+                                      setActiveHistoryDownloadId(null);
+                                    }}
+                                    className="w-full text-left px-2 py-1 text-[10px] font-medium text-zinc-300 hover:text-white hover:bg-indigo-600/30 rounded transition-colors flex items-center justify-between cursor-pointer"
+                                  >
+                                    <span>.WAV</span>
+                                    <span className="text-[8px] text-indigo-400 bg-indigo-500/10 px-1 py-0.2 rounded font-bold">HQ</span>
+                                  </button>
+                                  <button
+                                    onClick={(e) => {
+                                      handleDownloadHistoryItem(item, "mp3", e);
+                                      setActiveHistoryDownloadId(null);
+                                    }}
+                                    className="w-full text-left px-2 py-1 text-[10px] font-medium text-zinc-300 hover:text-white hover:bg-indigo-600/30 rounded transition-colors flex items-center justify-between cursor-pointer"
+                                  >
+                                    <span>.MP3</span>
+                                    <span className="text-[8px] text-emerald-400 bg-emerald-500/10 px-1 py-0.2 rounded font-bold">Std</span>
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Delete from list */}
+                          <button
+                            onClick={(e) => handleDeleteHistoryItem(item.id, e)}
+                            className="p-1 rounded bg-[#121214] hover:bg-rose-950/40 border border-[#27272a] text-zinc-500 hover:text-rose-400"
+                            title="Hapus"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <p className="text-[11px] text-zinc-300 leading-relaxed font-sans line-clamp-2">
+                        {item.text}
+                      </p>
+
+                      <div className="mt-2 pt-2 border-t border-[#27272a]/40 flex items-center justify-between text-[9px] text-zinc-500 font-mono">
+                        <span className="flex items-center gap-1">
+                          <Activity className="w-2.5 h-2.5 text-indigo-400" />
+                          <span>{item.engine === "ai" ? "Suara Neural" : "Local TTS"}</span>
+                        </span>
+                        <span>{item.timestamp}</span>
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="flex-1 flex flex-col items-center justify-center p-8 text-center rounded-xl border border-dashed border-[#27272a] min-h-[140px]">
+                  <Volume2 className="w-6 h-6 text-zinc-700 mb-2 animate-pulse" />
+                  <p className="text-[11px] text-zinc-500 italic max-w-[200px]">
+                    Riwayat pembacaan audio kosong. Mulai konversi teks baru untuk menyimpannya di sini.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Quick Informative User Guide */}
+          <div className="mt-auto bg-gradient-to-r from-violet-950/20 to-indigo-950/20 border border-violet-900/40 rounded-xl p-4 flex gap-3">
+            <Info className="w-4 h-4 text-violet-400 shrink-0 mt-0.5" />
+            <div className="text-[10px] leading-relaxed text-zinc-400">
+              <span className="text-white font-bold block mb-0.5">Informasi Kuota & Format</span>
+              Sintesis Neural menggunakan teknologi kecerdasan buatan (TTS) secara server-side. Seluruh riwayat berbasis cache lokal untuk pemutaran ulang secepat kilat tanpa konsumsi kuota tambahan.
+            </div>
+          </div>
+
+        </aside>
+      </div>
+    </div>
+  );
+}

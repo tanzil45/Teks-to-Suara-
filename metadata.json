@@ -1,0 +1,6 @@
+{
+  "name": "Teks ke Suara",
+  "description": "Aplikasi konversi Teks ke Suara (Text-to-Speech) modern dengan dukungan mesin AI Gemini Neural TTS dan Web Speech API Sistem.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
